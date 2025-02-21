@@ -1,5 +1,5 @@
 import sys
-from Azul_Classes import GameLogic
+from Azul_Classes import GameLogic, GameState
 from tabulate import tabulate
 from rich.console import Console
 from rich.table import Table
@@ -22,6 +22,11 @@ class Game:
         for player in self.game_logic.players:
             self.display_player_board(player)
             console.print("-" * 40)
+
+        print('ML friendly game state:')
+        ML_friendly_state = self.state.to_observation()
+        print(ML_friendly_state)
+        print(len(ML_friendly_state))
 
     def display_factories_and_center(self):
         table = Table(title="Factories & Center Area", header_style="bold magenta")
