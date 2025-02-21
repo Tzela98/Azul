@@ -55,9 +55,13 @@ class Game:
     def get_human_action(self, player):
         valid_actions = self.game_logic.get_valid_actions(player)
         console.print("\n[bold cyan]Available Actions:[/bold cyan]")
+        
+        if self.game_logic.state.game_phase == "placing":
+            console.print(f"Placing {self.game_logic.state.pending_count} "
+                          f"{self.game_logic.state.pending_color} tiles")
+        
         for i, action in enumerate(valid_actions):
             console.print(f"[bold yellow]{i}[/bold yellow]: {self.format_action(action)}")
-        console.print("[red]Type 'exit' to quit the game.[/red]")
 
         while True:
             choice = input("Choose action (0-{}): ".format(len(valid_actions)-1)).strip().lower()
@@ -73,10 +77,17 @@ class Game:
                 console.print("[red]Please enter a number or 'exit' to quit.[/red]")
 
     def format_action(self, action):
-        source_type, source_idx, color, target_row = action
-        source = f"Factory {source_idx}" if source_type == "factory" else "Center"
-        target = f"Row {target_row+1}" if target_row != -1 else "Floor"
-        return f"Take [bold]{color}[/bold] from {source} -> Place on {target}"
+        if self.game_logic.state.game_phase == "taking":
+            if action[2] is None:  # First player token case
+                return "Take first player token from Center"
+            source_type, source_idx, color = action
+            source = f"Factory {source_idx}" if source_type == "factory" else "Center"
+            return f"Take [bold]{color if color else 'FP token'}[/bold] from {source}"
+        else:
+            target_row = action[0]
+            target = f"Row {target_row+1}" if target_row != -1 else "Floor"
+            return f"Place on {target}"
+
 
     def play(self):
         while True:

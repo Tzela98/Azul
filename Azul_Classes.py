@@ -247,8 +247,13 @@ class GameState:
         
         # Game progression tracking
         self.current_player = current_player  
-        self.game_phase = "factory_selection"  # or "tile_placement"
+        self.game_phase = "taking"  # "taking" or "placing"
         self.round_number = 0
+        
+        # Pending state for tile placement
+        self.pending_color = None  # Color of tiles to be placed
+        self.pending_count = 0    # Number of tiles to be placed
+        self.pending_source = None  # Source of tiles ("factory" or "center")
 
     def to_observation(self):
         # Convert game state to numerical array for RL
@@ -265,6 +270,10 @@ class GameState:
         # Add current player's board state
         current_player = self.players[self.current_player]
         obs += self._encode_player_state(current_player)
+        
+        # Add pending state
+        obs.append(self.pending_count if self.pending_color else 0)
+        obs.append(self._color_to_index(self.pending_color) if self.pending_color else -1)
         
         # Convert to numpy array
         return np.array(obs)
@@ -287,6 +296,12 @@ class GameState:
         # Floor line count
         encoded.append(len(player.board.floor_line))
         return encoded
+    
+    def _color_to_index(self, color):
+        # Map color to index for observation
+        color_map = {"RED":0, "BLUE":1, "YELLOW":2, "BLACK":3, "WHITE":4}
+        return color_map.get(color, -1)
+
 
 class GameLogic:
     def __init__(self, num_players=2):
@@ -315,20 +330,28 @@ class GameLogic:
     def get_valid_actions(self, player):
         valid_actions = []
         
-        if self.state.game_phase == "factory_selection":
+        if self.state.game_phase == "taking":
             # Factory sources
             for f_idx, factory in enumerate(self.factories.factories):
                 if not factory:
                     continue
                 for color in set(factory):
-                    for target_row in self._get_valid_target_rows(player, color):
-                        valid_actions.append(("factory", f_idx, color, target_row))
+                    valid_actions.append(("factory", f_idx, color))
             
             # Center source
-            if self.central_area.tiles:
-                for color in set(self.central_area.tiles):
-                    for target_row in self._get_valid_target_rows(player, color):
-                        valid_actions.append(("center", -1, color, target_row))
+            if self.central_area.tiles or self.central_area.has_first_player_token:
+                colors = set(self.central_area.tiles) if self.central_area.tiles else set()
+                if colors:
+                    for color in colors:
+                        valid_actions.append(("center", -1, color))
+                else:
+                    # Allow taking first player token even if no tiles
+                    valid_actions.append(("center", -1, None))
+        
+        elif self.state.game_phase == "placing":
+            # Get valid target rows for pending color
+            valid_rows = self._get_valid_target_rows(player, self.state.pending_color)
+            valid_actions = [(row,) for row in valid_rows]
         
         return valid_actions
 
@@ -345,32 +368,48 @@ class GameLogic:
         current_player = self.state.players[self.state.current_player]
         prev_score = current_player.score
 
-        # Process action
-        source_type, source_idx, color, target_row = action
+        if self.state.game_phase == "taking":
+            # Handle tile taking
+            source_type, source_idx, color = action
+            
+            # Take tiles from source
+            if source_type == "factory":
+                taken, remaining = self.factories.take_tiles(source_idx, color)
+                self.central_area.add_tiles(remaining)
+            else:
+                taken, took_token = self.central_area.take_tiles(color)
+                if took_token:
+                    current_player.take_first_player_token()
+            
+            # Update pending state
+            self.state.pending_color = color
+            self.state.pending_count = len(taken)
+            self.state.pending_source = source_type
+            self.state.game_phase = "placing"
         
-        # Take tiles
-        if source_type == "factory":
-            taken, remaining = self.factories.take_tiles(source_idx, color)
-            self.central_area.add_tiles(remaining)
-        else:
-            taken, took_token = self.central_area.take_tiles(color)
-            if took_token:
-                current_player.take_first_player_token()
-
-        # Place tiles
-        num_tiles = len(taken)
-        if target_row == -1:
-            current_player.board.floor_line.extend(taken)
-        else:
-            overflow = current_player.board.place_tiles(color, target_row, num_tiles)
-            current_player.board.floor_line.extend(overflow)
-
-        # Advance to next player
-        self.state.current_player = (self.state.current_player + 1) % self.num_players
-
-        # Check round completion
-        if self.factories.is_empty() and not self.central_area.tiles:
-            self._score_round()
+        elif self.state.game_phase == "placing":
+            # Handle tile placement
+            target_row = action[0]
+            
+            # Place tiles on pattern line or floor
+            if target_row == -1:
+                current_player.board.floor_line.extend([self.state.pending_color] * self.state.pending_count)
+            else:
+                overflow = current_player.board.place_tiles(self.state.pending_color, target_row, self.state.pending_count)
+                current_player.board.floor_line.extend(overflow)
+            
+            # Reset pending state
+            self.state.pending_color = None
+            self.state.pending_count = 0
+            self.state.pending_source = None
+            
+            # Advance to next player
+            self.state.current_player = (self.state.current_player + 1) % self.num_players
+            self.state.game_phase = "taking"
+            
+            # Check round completion
+            if self.factories.is_empty() and not self.central_area.tiles:
+                self._score_round()
 
         # Calculate reward and check termination
         reward = current_player.score - prev_score
@@ -405,7 +444,7 @@ class GameLogic:
         
         # Determine first player
         new_first_player = 0
-        for idx, player in enumerate(self.players):
+        for idx, player in self.players:
             if player.has_first_player_token:
                 new_first_player = idx
                 player.has_first_player_token = False
@@ -413,7 +452,7 @@ class GameLogic:
         
         # Update game state
         self.state.current_player = new_first_player
-        self.state.game_phase = "factory_selection"
+        self.state.game_phase = "taking"
 
     def _check_game_over(self):
         # Check for completed wall row
