@@ -1,5 +1,5 @@
 import sys
-from Azul_Classes import GameLogic, GameState
+from azul_classes import GameLogic, GameState
 from tabulate import tabulate
 from rich.console import Console
 from rich.table import Table

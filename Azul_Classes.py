@@ -370,7 +370,12 @@ class GameLogic:
 
         if self.state.game_phase == "taking":
             # Handle tile taking
-            source_type, source_idx, color = action
+            if len(action) == 4:
+                # Unified action format
+                source_type, source_idx, color, _ = action  # Ignore target_row for taking phase
+            else:
+                # Legacy action format (for backward compatibility)
+                source_type, source_idx, color = action
             
             # Take tiles from source
             if source_type == "factory":
@@ -389,7 +394,12 @@ class GameLogic:
         
         elif self.state.game_phase == "placing":
             # Handle tile placement
-            target_row = action[0]
+            if len(action) == 4:
+                # Unified action format
+                target_row = action[3]  # Use target_row for placing phase
+            else:
+                # Legacy action format (for backward compatibility)
+                target_row = action[0]
             
             # Place tiles on pattern line or floor
             if target_row == -1:
@@ -416,6 +426,7 @@ class GameLogic:
         done = self._check_game_over()
         
         return self.state, reward, done, {}
+
 
     def _score_round(self):
         # Score all players
