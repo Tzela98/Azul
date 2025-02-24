@@ -93,6 +93,7 @@ class DQNAgent:
     def train(self):
         """Train the Q-network using a batch of experiences."""
         if len(self.replay_buffer) < self.batch_size:
+            print("Replay buffer not full yet. Skipping training.")
             return
 
         # Sample a batch of experiences
@@ -108,7 +109,8 @@ class DQNAgent:
 
         # Ensure actions are within valid range
         if (actions >= self.output_size).any():
-            raise ValueError(f"Invalid action index: {actions.max().item()} (max allowed: {self.output_size - 1})")
+            invalid_action = actions.max().item()
+            raise ValueError(f"Invalid action index: {invalid_action} (max allowed: {self.output_size - 1})")
 
         # Reshape actions to [batch_size, 1] for gather
         actions = actions.unsqueeze(1)  # Shape: [batch_size, 1]
@@ -129,6 +131,17 @@ class DQNAgent:
 
         # Decay epsilon
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+        # Verbose statements
+        print(f"Training Step:")
+        print(f"  - Loss: {loss.item():.4f}")
+        print(f"  - Epsilon: {self.epsilon:.4f}")
+        print(f"  - Avg Reward in Batch: {rewards.mean().item():.4f}")
+        print(f"  - Max Target Q-Value: {target_q_values.max().item():.4f}")
+        print(f"  - Min Target Q-Value: {target_q_values.min().item():.4f}")
+        print(f"  - Avg Target Q-Value: {target_q_values.mean().item():.4f}")
+        print(f"  - Avg Current Q-Value: {current_q_values.mean().item():.4f}")
+        print("-" * 40)
 
         return loss.item()  # Return the loss value
 

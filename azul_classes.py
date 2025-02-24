@@ -118,6 +118,10 @@ class PlayerBoard:
         self.floor_line = []
         self.score = 0
 
+    def row_completed(self, row_idx: int) -> bool:
+        max_capacity = row_idx + 1
+        return len(self.pattern_lines[row_idx]) == max_capacity
+
     def place_tiles(self, color: str, row_idx: int, num_tiles: int) -> list:
         max_capacity = row_idx + 1
         current_tiles = len(self.pattern_lines[row_idx])
@@ -366,7 +370,10 @@ class GameLogic:
 
     def step(self, action):
         current_player = self.state.players[self.state.current_player]
+        prev_wall = [row.copy() for row in current_player.board.wall_state]
         prev_score = current_player.score
+        target_row = None
+        took_token = None
 
         if self.state.game_phase == "taking":
             # Handle tile taking
@@ -422,10 +429,39 @@ class GameLogic:
                 self._score_round()
 
         # Calculate reward and check termination
-        reward = current_player.score - prev_score
+        reward = self.calculate_reward(current_player, prev_score, prev_wall, took_token, target_row)
         done = self._check_game_over()
         
         return self.state, reward, done, {}
+    
+
+    def calculate_reward(self, current_player, prev_score, prev_wall, took_token, target_row):
+        reward = 0 
+
+        # 1. Immidiate Score Change (gives the potentially largest reward)
+        reward += current_player.score -  prev_score
+
+        # 2. Reward for completing a row
+        for row_idx in range(5):
+            if current_player.board.row_completed == True:
+                reward += 1
+
+        # 3. Penalty for placing tiles in the floor line
+        if target_row == -1:
+            reward -= 0.5
+
+        # 4. Reward for progress on the wall: 
+        new_wall = current_player.board.wall_state
+        for i in range(5):
+            for j in range(5):
+                if new_wall[i][j] and not prev_wall[i][j]:
+                    reward += 0.2
+
+        # 5. Reward for taking the first player token
+        if took_token:
+            reward += 0.5
+
+        return reward
 
 
     def _score_round(self):
@@ -441,6 +477,7 @@ class GameLogic:
         
         # Start new round
         self._start_new_round()
+
 
     def _start_new_round(self):
         # Refill factories
