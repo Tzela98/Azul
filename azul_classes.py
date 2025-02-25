@@ -82,7 +82,7 @@ class CentralArea:
             return [], False
         
         taken_tiles = [t for t in self.tiles if t == color]
-        remaining_tiles = [t for t in self.tiles if t != color]
+        self.tiles = [t for t in self.tiles if t!= color]
         took_token = self.has_first_player_token
 
         if took_token:
@@ -363,7 +363,7 @@ class GameLogic:
         valid_rows = []
         for row_idx in range(5):
             line = player.board.pattern_lines[row_idx]
-            if not line or line[0] == color:  # Allow placing if row is empty or matches color
+            if len(line) < row_idx + 1 and (not line or line[0] == color):  # Allow placing if row is empty or matches color and is not full
                 valid_rows.append(row_idx)
         valid_rows.append(-1)  # Always allow placement on the floor line
         return valid_rows
@@ -492,7 +492,7 @@ class GameLogic:
         
         # Determine first player
         new_first_player = 0
-        for idx, player in self.players:
+        for idx, player in enumerate(self.players):
             if player.has_first_player_token:
                 new_first_player = idx
                 player.has_first_player_token = False
@@ -508,4 +508,9 @@ class GameLogic:
             for row in player.board.wall_state:
                 if all(row):
                     return True
+                
+        # Check if the tile bag is empty and no more tiles can be drawn
+        if not self.tile_bag.tiles and not self.tile_bag.discard_pile:
+            return True
+        
         return False

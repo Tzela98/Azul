@@ -29,38 +29,67 @@ class AzulEnv:
         self.color_to_index = {"RED": 0, "BLUE": 1, "YELLOW": 2, "BLACK": 3, "WHITE": 4}
         self.index_to_color = {v: k for k, v in self.color_to_index.items()}
 
+    def action_to_index(self, action):
+        """
+        Convert an action to an index that matches the Q-network's output.
+        """
+        # Example: If actions are tuples (source_type, source_idx, color, target_row)
+        source_type, source_idx, color, target_row = action
+
+        # Calculate the index based on the action space dimensions
+        index = (
+            source_type * (5 * 5 * 6) +  # source_type: 0 or 1
+            source_idx * (5 * 6) +       # source_idx: 0-4
+            color * 6 +                  # color: 0-4
+            target_row                   # target_row: 0-5
+        )
+        return index
+
     def reset(self):
         self.state = self.game_logic.reset()
         self.current_player = self.state.current_player
         return self.state.to_observation()
 
     def step(self, action):
-        # Convert numerical action to the format expected by GameLogic
-        if isinstance(action, (list, np.ndarray)) and len(action) == 4:
-            # Action is in numerical format
-            source_type = "factory" if action[0] == 0 else "center"
-            source_idx = int(action[1])  # Ensure source_idx is an integer
-            color = self.index_to_color.get(int(action[2]), None)  # Convert color index to string
-            target_row = int(action[3]) if action[3] != 5 else -1  # Map 5 to -1 (floor)
-            action_for_logic = (source_type, source_idx, color, target_row)
-        elif isinstance(action, int):
-            # Convert integer action (flattened index) to the unified format
-            # Assuming the action space is 2 (source_type) * 5 (source_idx) * 5 (color) * 6 (target_row) = 300
-            source_type = "factory" if (action // (5 * 5 * 6)) % 2 == 0 else "center"
-            source_idx = (action // (5 * 6)) % 5
-            color = self.index_to_color.get((action // 6) % 5, None)
-            target_row = action % 6 if action % 6 != 5 else -1  # Map 5 to -1 (floor)
-            action_for_logic = (source_type, source_idx, color, target_row)
+        # Ensure action is a list or NumPy array
+        if isinstance(action, np.ndarray):
+            action = action.tolist()  # Convert NumPy array to list
+        elif isinstance(action, list):
+            pass  # Already a list
         else:
-            # Action is already in the format expected by GameLogic
-            action_for_logic = action
+            raise ValueError(f"Action must be a list or NumPy array, but got {type(action)}: {action}")
+
+        # Ensure action has exactly 4 elements
+        if len(action) != 4:
+            raise ValueError(f"Action must have exactly 4 elements, but got {len(action)}: {action}")
+
+        # Extract source_type, source_idx, color, and target_row from the action
+        source_type = "factory" if action[0] == 0 else "center"  # Convert 0 to "factory", 1 to "center"
+        source_idx = int(action[1])  # Ensure source_idx is an integer
+        color = self.index_to_color.get(int(action[2]), None)  # Convert color index to string
+        target_row = int(action[3]) if action[3] != 5 else -1  # Map 5 to -1 (floor)
+
+        # Ensure source_type is a string
+        if not isinstance(source_type, str):
+            raise ValueError(f"source_type must be a string, but got {type(source_type)}: {source_type}")
+
+        # Convert action components to a tuple
+        action_for_logic = (source_type, source_idx, color, target_row)
+
+        # Determine the current phase of the game
+        if self.state.game_phase == "taking":
+            # Taking phase: pass (source_type, source_idx, color)
+            action_for_logic = (source_type, source_idx, color)
+        else:
+            # Placing phase: pass (target_row,)
+            action_for_logic = (target_row,)
 
         # Execute the action
         self.state, reward, done, info = self.game_logic.step(action_for_logic)
         self.current_player = self.state.current_player
 
         # Return the new observation, reward, done flag, and info
-        return self.state.to_observation(), reward, done, info
+        return self.state.to_observation(), reward, done, info  
 
 
     def get_valid_actions(self):
