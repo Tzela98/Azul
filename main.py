@@ -2,143 +2,178 @@ import numpy as np
 from azul_env import AzulEnv
 from dqn_agent import DQNAgent
 import os
-import logging  # Add this import
+import logging
+import matplotlib.pyplot as plt
+from datetime import datetime
 
-# Set up logging to a file
+# Configure logging
 logging.basicConfig(
-    filename="training_debug.log",  # Log file name
-    level=logging.INFO,             # Log level (INFO, DEBUG, etc.)
-    format="%(asctime)s - %(message)s",  # Log format
-    filemode="w"                    # Overwrite the log file each time
+    filename=f"training_{datetime.now().strftime('%Y%m%d_%H%M')}.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filemode="w"
 )
 
-
-def train_agent(num_episodes=10000, num_players=2, save_model_path="azul_dqn.pth", save_interval=1000):
-    """
-    Train the DQN agent using self-play (agent plays against itself).
-
-    Args:
-        num_episodes (int): Number of episodes to train.
-        num_players (int): Number of players in the game.
-        save_model_path (str): Path to save the trained model.
-        save_interval (int): Save the model every N episodes.
-    """
-    # Initialize the environment and agent
+def train_agent(num_episodes=1000, num_players=2, save_model_path="azul_dqn.pth", save_interval=100):
     env = AzulEnv(num_players=num_players)
-    agent = DQNAgent(env)
+    agent = DQNAgent(
+        env,
+        batch_size=64,
+        epsilon_decay=0.997,
+        epsilon_min=0.02,
+        lr=1e-4,
+        tau=0.01
+    )
+
+    # Initialize metrics tracking
+    metrics = {
+        'rewards': [],
+        'losses': [],
+        'epsilons': [],
+        'buffer_sizes': []
+    }
+
+    # Pre-fill replay buffer
+    logging.info("Initializing replay buffer...")
+    while len(agent.replay_buffer) < agent.batch_size:
+        state = env.reset()
+        done = False
+        while not done:
+            action = env.sample_valid_action()
+            next_state, reward, done, _ = env.step(action)
+            agent.replay_buffer.push(state, action, reward, next_state, done)
+            state = next_state
+    logging.info(f"Initial buffer size: {len(agent.replay_buffer)}")
 
     # Training loop
     for episode in range(num_episodes):
         state = env.reset()
         done = False
         total_reward = 0
-
-        logging.info(f"\n=== Starting Episode {episode + 1} ===")
-
+        episode_losses = []
+        
+        logging.info(f"\n=== Episode {episode+1}/{num_episodes} ===")
+        
         while not done:
-            # Get the current player's action
-            if env.state.current_player == 0:
-                # Agent's turn: get action and unflatten it
+            try:
+                # Get action from agent
                 action = agent.get_action(state)
-
-                # Debug: Log the action
-                logging.info(f"\nAgent's Turn (Player 0):")
-                logging.info(f"  State: {state}")
-                logging.info(f"  Selected Action: {action}")
-
-                # Ensure action is a single list or NumPy array with 4 elements
-                if isinstance(action, tuple):
-                    action = np.concatenate(action)  # Combine all arrays into one
-                if isinstance(action, np.ndarray):
-                    action = action.tolist()  # Convert to list if necessary
-                if not isinstance(action, list) or len(action) != 4:
-                    logging.error(f"Action must be a list or NumPy array with 4 elements, but got {type(action)}: {action}")
-                    raise ValueError(f"Action must be a list or NumPy array with 4 elements, but got {type(action)}: {action}")
-
-                # Check if the selected action is valid
-                valid_actions = env.get_valid_actions()
-                logging.info(f"Valid Actions: {valid_actions}")
-                logging.info(f"Selected Action: {action}")
-                if action not in valid_actions:
-                    logging.error(f"Invalid Action: {action}")
-                    raise ValueError("Invalid action selected by the agent.")
-
-                # Take a step in the environment
-                next_state, rewards, done, info = env.step(action)
-
-                # Debug: Log the results of the step
-                logging.info(f"  Next State: {next_state}")
-                logging.info(f"  Rewards: {rewards}")
-                logging.info(f"  Done: {done}")
-                logging.info(f"  Info: {info}")
-
-                # Store the experience in the replay buffer (only for the agent)
-                agent.replay_buffer.push(state, action, rewards, next_state, done)
-
-                # Train the agent
-                loss = agent.train()
-
-                # Update state and total reward
+                
+                # Log the action in human-readable format
+                logging.info(f"Attempting action: {env.translate_action(action)}")
+                
+                # Execute action
+                next_state, reward, done, info = env.step(action)
+                
+                # Store experience
+                agent.replay_buffer.push(state, action, reward, next_state, done)
+                
+                # Train agent
+                if len(agent.replay_buffer) >= agent.batch_size:
+                    loss = agent.train()
+                    episode_losses.append(loss)
+                    logging.debug(f"Step loss: {loss:.4f}")
+                
+                total_reward += reward
                 state = next_state
-                total_reward += rewards
-            else:
-                # Opponent's turn: use the latest version of the agent to decide the opponent's move
-                action = agent.get_action(state)
+                
+            except Exception as e:
+                logging.error(f"Episode {episode} failed: {str(e)}")
+                break
 
-                # Debug: Log the action
-                logging.info(f"\nOpponent's Turn (Player {env.state.current_player}):")
-                logging.info(f"  State: {state}")
-                logging.info(f"  Selected Action: {action}")
+        # Update metrics
+        avg_loss = np.mean(episode_losses) if episode_losses else 0
+        metrics['rewards'].append(total_reward)
+        metrics['losses'].append(avg_loss)
+        metrics['epsilons'].append(agent.epsilon)
+        metrics['buffer_sizes'].append(len(agent.replay_buffer))
 
-                # Ensure action is a single list or NumPy array with 4 elements
-                if isinstance(action, tuple):
-                    action = np.concatenate(action)  # Combine all arrays into one
-                if isinstance(action, np.ndarray):
-                    action = action.tolist()  # Convert to list if necessary
-                if not isinstance(action, list) or len(action) != 4:
-                    logging.error(f"Action must be a list or NumPy array with 4 elements, but got {type(action)}: {action}")
-                    raise ValueError(f"Action must be a list or NumPy array with 4 elements, but got {type(action)}: {action}")
+        # Log episode summary
+        logging.info(
+            f"Episode {episode+1} | "
+            f"Reward: {total_reward:.2f} | "
+            f"Avg Loss: {avg_loss:.4f} | "
+            f"Epsilon: {agent.epsilon:.3f} | "
+            f"Buffer: {len(agent.replay_buffer)}"
+        )
 
-                # Check if the selected action is valid
-                valid_actions = env.get_valid_actions()
-                logging.info(f"Valid Actions: {valid_actions}")
-                logging.info(f"Selected Action: {action}")
-                if action not in valid_actions:
-                    logging.error(f"Invalid Action: {action}")
-                    raise ValueError("Invalid action selected by the agent.")
-
-                # Take a step in the environment for the opponent
-                next_state, rewards, done, info = env.step(action)
-
-                # Debug: Log the results of the step
-                logging.info(f"  Next State: {next_state}")
-                logging.info(f"  Rewards: {rewards}")
-                logging.info(f"  Done: {done}")
-                logging.info(f"  Info: {info}")
-
-                # Update state
-                state = next_state
-
-        # Log episode results
-        logging.info(f"\n=== Episode {episode + 1} Summary ===")
-        logging.info(f"  Total Reward: {total_reward}")
-        logging.info(f"  Epsilon: {agent.epsilon:.4f}")
-        if loss is not None:
-            logging.info(f"  Loss: {loss:.4f}")
-
-        # Save the model periodically
+        # Save model periodically
         if (episode + 1) % save_interval == 0:
-            os.makedirs("models", exist_ok=True)
-            model_path = os.path.join("models", f"{save_model_path}_episode_{episode + 1}.pth")
-            agent.save_model(model_path)
-            logging.info(f"\nModel saved to {model_path}")
+            save_path = f"models/{save_model_path}_ep{episode+1}.pth"
+            agent.save_model(save_path)
+            logging.info(f"Model saved to {save_path}")
 
-    # Save the final model
-    final_model_path = os.path.join("models", save_model_path)
-    agent.save_model(final_model_path)
-    logging.info(f"\nTraining complete. Final model saved to {final_model_path}")
+        # Visualize training progress
+        if (episode + 1) % 50 == 0:
+            _plot_progress(metrics)
 
+    # Final save
+    agent.save_model(f"models/{save_model_path}_final.pth")
+    logging.info("Training completed successfully")
+    return metrics
+
+def _plot_progress(metrics):
+    """Helper function to plot training metrics"""
+    os.makedirs("plots", exist_ok=True)
+    
+    plt.figure(figsize=(12, 8))
+    
+    # Reward plot
+    plt.subplot(2, 2, 1)
+    plt.plot(metrics['rewards'])
+    plt.title("Episode Rewards")
+    plt.xlabel("Episode")
+    plt.ylabel("Total Reward")
+    
+    # Loss plot
+    plt.subplot(2, 2, 2)
+    plt.plot(metrics['losses'])
+    plt.title("Training Loss")
+    plt.xlabel("Episode")
+    plt.ylabel("Average Loss")
+    
+    # Epsilon plot
+    plt.subplot(2, 2, 3)
+    plt.plot(metrics['epsilons'])
+    plt.title("Exploration Rate")
+    plt.xlabel("Episode")
+    plt.ylabel("Epsilon")
+    
+    # Buffer size plot
+    plt.subplot(2, 2, 4)
+    plt.plot(metrics['buffer_sizes'])
+    plt.title("Replay Buffer Size")
+    plt.xlabel("Episode")
+    plt.ylabel("Buffer Size")
+    
+    plt.tight_layout()
+    plt.savefig("plots/training_progress.png")
+    plt.close()
+
+def test_legal_moves(env):
+    """Test that the agent only selects legal moves."""
+    env.reset()
+    print("Testing legal moves...")
+    
+    # Get valid actions
+    valid_actions = env.get_valid_actions()
+    print("Valid actions:")
+    for action in valid_actions:
+        print(f"  {env.translate_action(action)}")
+    
+    # Ensure the agent only selects valid actions
+    for _ in range(10):
+        action = env.sample_valid_action()
+        
+        # Check if action is in valid_actions
+        is_valid = any(np.array_equal(action, valid_action) for valid_action in valid_actions)
+        
+        if not is_valid:
+            print(f"ERROR: Invalid action selected: {env.translate_action(action)}")
+        else:
+            print(f"Valid action selected: {env.translate_action(action)}")
 
 if __name__ == "__main__":
-    # Train the agent
-    train_agent(num_episodes=1000, num_players=2, save_model_path="final_model.pth")
+    env = AzulEnv(num_players=2)
+    test_legal_moves(env)
+    train_agent(num_episodes=1000, num_players=2)

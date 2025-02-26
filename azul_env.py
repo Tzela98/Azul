@@ -1,123 +1,175 @@
-from gym.spaces import Box, MultiDiscrete, Discrete
+from gym.spaces import Box, MultiDiscrete
 from azul_classes import GameLogic
 import numpy as np
+import logging
+import random
 
 class AzulEnv:
     def __init__(self, num_players=2):
+        self.logger = logging.getLogger('AzulEnv')
         self.num_players = num_players
-        self.game_logic = GameLogic(num_players)
-        self.state = self.game_logic.reset()
-        self.current_player = self.state.current_player
-
-        # Define observation space
-        self.observation_space = Box(
-            low=0,
-            high=20,  # Adjust based on your game's logic
-            shape=(64,),  # Size of the observation array
-            dtype=np.float32
-        )
-
-        # Define a unified action space
-        self.action_space = MultiDiscrete([
-            2,  # source_type: 0 (factory) or 1 (center)
-            5,  # source_idx: 0-4 (factories) or -1 (center)
-            5,  # color: 0-4 (RED, BLUE, YELLOW, BLACK, WHITE)
-            6   # target_row: 0-4 (rows) or 5 (floor)
-        ])
-
-        # Mapping between colors and indices
-        self.color_to_index = {"RED": 0, "BLUE": 1, "YELLOW": 2, "BLACK": 3, "WHITE": 4}
-        self.index_to_color = {v: k for k, v in self.color_to_index.items()}
-
-    def action_to_index(self, action):
-        """
-        Convert an action to an index that matches the Q-network's output.
-        """
-        # Example: If actions are tuples (source_type, source_idx, color, target_row)
-        source_type, source_idx, color, target_row = action
-
-        # Calculate the index based on the action space dimensions
-        index = (
-            source_type * (5 * 5 * 6) +  # source_type: 0 or 1
-            source_idx * (5 * 6) +       # source_idx: 0-4
-            color * 6 +                  # color: 0-4
-            target_row                   # target_row: 0-5
-        )
-        return index
+        self.game = GameLogic(num_players)
+        self.observation_space = Box(low=0, high=20, shape=(64,), dtype=np.float32)
+        self.action_space = MultiDiscrete([2, 5, 5, 6])  # [source_type, source_idx, color, target_row]
+        self.color_map = {"RED":0, "BLUE":1, "YELLOW":2, "BLACK":3, "WHITE":4}
+        self.pending_action = None
 
     def reset(self):
-        self.state = self.game_logic.reset()
-        self.current_player = self.state.current_player
-        return self.state.to_observation()
+        """Reset the environment and return the initial observation."""
+        self.logger.info("Resetting environment")
+        self.game.reset()
+        self.pending_action = []
+        return self._get_observation()
 
-    def step(self, action):
-        # Ensure action is a list or NumPy array
-        if isinstance(action, np.ndarray):
-            action = action.tolist()  # Convert NumPy array to list
-        elif isinstance(action, list):
-            pass  # Already a list
-        else:
-            raise ValueError(f"Action must be a list or NumPy array, but got {type(action)}: {action}")
+    def _get_observation(self):
+        """Convert the game state into an observation vector."""
+        try:
+            return np.array(self.game.state.to_observation(), dtype=np.float32)
+        except AttributeError:
+            return np.zeros(self.observation_space.shape, dtype=np.float32)
 
-        # Ensure action has exactly 4 elements
-        if len(action) != 4:
-            raise ValueError(f"Action must have exactly 4 elements, but got {len(action)}: {action}")
+    def step(self, combined_action):
+        """Execute one step in the environment."""
+        try:
+            reward = 0
+            done = False
+            
+            # Log the action in human-readable format
+            self.logger.info(f"Attempting action: {self.translate_action(combined_action)}")
+            
+            if self.game.state.game_phase == "taking":
+                self._handle_take_phase(combined_action[:3])
+                return self._get_observation(), 0, False, {}
+                
+            elif self.game.state.game_phase == "placing":
+                reward = self._handle_place_phase(combined_action[3])
+                done = self.game._check_game_over()
+                
+                # Reset pending_action after placing phase
+                self.pending_action = None
+                return self._get_observation(), reward, done, {}
 
-        # Extract source_type, source_idx, color, and target_row from the action
-        source_type = "factory" if action[0] == 0 else "center"  # Convert 0 to "factory", 1 to "center"
-        source_idx = int(action[1])  # Ensure source_idx is an integer
-        color = self.index_to_color.get(int(action[2]), None)  # Convert color index to string
-        target_row = int(action[3]) if action[3] != 5 else -1  # Map 5 to -1 (floor)
+        except Exception as e:
+            self.logger.error(f"Invalid action: {self.translate_action(combined_action)} | Error: {str(e)}")
+            return self._get_observation(), -10, True, {}
+    
+    def translate_action(self, action):
+        """Convert numerical action to human-readable format."""
+        source_map = {0: "Factory", 1: "Center"}
+        color_map = {0: "Red", 1: "Blue", 2: "Yellow", 3: "Black", 4: "White"}
+        
+        source_type = source_map[action[0]]
+        # Use 1-based numbering ONLY for factories
+        source_idx = action[1] + 1 if source_type == "Factory" else 0
+        color = color_map[action[2]]
+        target = "Floor" if action[3] == 5 else f"Row {action[3] + 1}"
+        
+        return f"Take {color} from {source_type} {source_idx} → Place on {target}"
 
-        # Ensure source_type is a string
-        if not isinstance(source_type, str):
-            raise ValueError(f"source_type must be a string, but got {type(source_type)}: {source_type}")
+    def _handle_take_phase(self, take_action):
+        """Execute tile-taking action with enhanced validation."""
+        source_type = "factory" if take_action[0] == 0 else "center"
+        source_idx = int(take_action[1])
+        color_idx = take_action[2]
+        
+        try:
+            color = list(self.color_map.keys())[color_idx]
+        except IndexError:
+            raise ValueError(f"Invalid color index {color_idx}")
+        
+        current_player = self.get_current_player()
+        all_valid = self.game.get_valid_actions(current_player)
 
-        # Convert action components to a tuple
-        action_for_logic = (source_type, source_idx, color, target_row)
+        self.logger.info(f"Checking action: Source Type={source_type}, Source Index={source_idx}, Color={color} (Index={color_idx})")
+        self.logger.info(f"Valid actions from env: {all_valid}")
 
-        # Determine the current phase of the game
-        if self.state.game_phase == "taking":
-            # Taking phase: pass (source_type, source_idx, color)
-            action_for_logic = (source_type, source_idx, color)
-        else:
-            # Placing phase: pass (target_row,)
-            action_for_logic = (target_row,)
+        for a in all_valid:
+            self.logger.info(f"Valid Action: Source Type={a[0]}, Source Index={a[1]}, Color={a[2]}")
 
-        # Execute the action
-        self.state, reward, done, info = self.game_logic.step(action_for_logic)
-        self.current_player = self.state.current_player
+        
+        valid = next(
+            (a for a in all_valid 
+             if a[0] == source_type 
+             and a[1] == source_idx 
+             and (a[2] == color or (a[2] is None and color_idx == 4))),
+            None
+        )
 
-        # Return the new observation, reward, done flag, and info
-        return self.state.to_observation(), reward, done, info  
+        self.logger.info(f"Matched valid action: {valid}")
+        
+        if not valid:
+            # Log valid actions in human-readable format
+            valid_actions = [self.translate_action([0 if a[0] == "factory" else 1, a[1], self.color_map.get(a[2], 4), 5]) 
+                           for a in all_valid]
+            self.logger.error(f"Action not valid. Valid actions: {valid_actions}")
+            raise ValueError("Invalid take action")
+        
+        self.pending_action = take_action
+        self.game.step(valid)
 
+    def _handle_place_phase(self, target_row):
+        """Execute tile-placing action."""
+        place_action = (target_row if target_row < 5 else -1,)
+        current_player = self.get_current_player()
+        valid_actions = self.game.get_valid_actions(current_player)
+        
+        if place_action not in valid_actions:
+            raise ValueError(f"Invalid place action: {place_action}")
+        
+        prev_score = current_player.score
+        self.game.step(place_action)
+        return (current_player.score - prev_score) / 10.0
 
     def get_valid_actions(self):
-        current_player = self.state.players[self.current_player]
-        valid_actions = self.game_logic.get_valid_actions(current_player)
+        """Generate valid combined actions for current phase, based on game logic."""
+        valid = []
+        phase = self.game.state.game_phase
+        current_player = self.get_current_player()
         
-        # Convert valid actions to numerical format
-        numerical_actions = []
-        for action in valid_actions:
-            if isinstance(action, tuple):
-                if len(action) == 3:  # Taking phase
-                    source_type, source_idx, color = action
-                    numerical_action = [
-                        0 if source_type == "factory" else 1,  # source_type
-                        source_idx if source_idx != -1 else 4,  # source_idx
-                        self.color_to_index.get(color, 4),  # color
-                        5  # Default to floor (target_row)
-                    ]
-                elif len(action) == 1:  # Placing phase
-                    target_row = action[0]
-                    numerical_action = [
-                        0,  # Placeholder for source_type
-                        0,  # Placeholder for source_idx
-                        0,  # Placeholder for color
-                        target_row if target_row != -1 else 5  # target_row
-                    ]
-                numerical_actions.append(numerical_action)
+        if phase == "taking":
+            # Get valid take actions from game logic
+            take_actions = self.game.get_valid_actions(current_player)
+            
+            # Convert to numerical format
+            for action in take_actions:
+                source_type = 0 if action[0] == "factory" else 1
+                source_idx = action[1] if action[1] != -1 else 0  # Map -1 to 0 for center
+                color_idx = self.color_map.get(action[2], 4) if action[2] else 4  # Handle None
+                valid.append([source_type, source_idx, color_idx, 5])  # Placeholder for place phase
         
-        return numerical_actions
+        elif phase == "placing":
+
+            # Ensure pending_action is not None
+            if self.pending_action is None:
+                self.logger.warning("No pending action found during placing phase.")
+                return []
+            
+            # Get valid place actions from game logic
+            place_actions = self.game.get_valid_actions(current_player)
+            
+            # Preserve the original take action
+            take_part = self.pending_action[:3]
+            for action in place_actions:
+                valid.append([
+                    take_part[0],  # source_type
+                    take_part[1],  # source_idx
+                    take_part[2],  # color_idx
+                    action[0] if action[0] != -1 else 5  # target_row
+                ])
+        
+        return valid
+    
+    def sample_valid_action(self):
+        """
+        Samples a valid action from the list of allowed actions based on the current game state.
+        Returns a valid action in the format [source_type, source_idx, color, target_row].
+        """
+        valid_actions = self.get_valid_actions()
+        if not valid_actions:
+            raise ValueError("No valid actions available in the current game state.")
+        return random.choice(valid_actions)
 
 
+    def get_current_player(self):
+        """Get the current player object from game state."""
+        return self.game.state.players[self.game.state.current_player]

@@ -429,40 +429,60 @@ class GameLogic:
                 self._score_round()
 
         # Calculate reward and check termination
-        reward = self.calculate_reward(current_player, prev_score, prev_wall, took_token, target_row)
-        done = self._check_game_over()
+        game_over = self._check_game_over()
+        is_winner = self.is_winner(current_player) if game_over else False
+        reward = self.calculate_reward(
+            current_player=current_player,
+            prev_score=prev_score,
+            prev_wall=prev_wall,
+            took_token=took_token,
+            target_row=target_row,
+            game_over=game_over,
+            is_winner=is_winner
+        )
         
-        return self.state, reward, done, {}
+        return self.state, reward, game_over, {}
     
 
-    def calculate_reward(self, current_player, prev_score, prev_wall, took_token, target_row):
+    def calculate_reward(self, current_player, prev_score, prev_wall, took_token, target_row, game_over=False, is_winner=False):
         reward = 0 
 
-        # 1. Immidiate Score Change (gives the potentially largest reward)
-        reward += current_player.score -  prev_score
+        # 1. Immediate Score Change (normalized)
+        reward += (current_player.board.score - prev_score) / 10.0
 
         # 2. Reward for completing a row
         for row_idx in range(5):
-            if current_player.board.row_completed == True:
-                reward += 1
+            if current_player.board.row_completed(row_idx):
+                reward += 1.0
 
         # 3. Penalty for placing tiles in the floor line
         if target_row == -1:
-            reward -= 0.5
+            reward -= 1.0
 
-        # 4. Reward for progress on the wall: 
+        # 4. Reward for progress on the wall
         new_wall = current_player.board.wall_state
         for i in range(5):
             for j in range(5):
                 if new_wall[i][j] and not prev_wall[i][j]:
-                    reward += 0.2
+                    reward += 0.5
 
         # 5. Reward for taking the first player token
         if took_token:
-            reward += 0.5
+            reward += 1.0
+
+        # 6. Reward for winning the game
+        if game_over and is_winner:
+            reward += 10
 
         return reward
-
+    
+    def is_winner(self, player):
+        """
+        Check if the given player is the winner.
+        """
+        # Compare the player's score to other players' scores
+        max_score = max(p.board.score for p in self.state.players)
+        return player.board.score == max_score
 
     def _score_round(self):
         # Score all players
@@ -507,10 +527,13 @@ class GameLogic:
         for player in self.players:
             for row in player.board.wall_state:
                 if all(row):
+                    # Game ends if any player completes a row, but only after the current round is completed
                     return True
-                
-        # Check if the tile bag is empty and no more tiles can be drawn
+        
+        # Check if the tile bag is empty, no more tiles can be drawn, and the current round is completed
         if not self.tile_bag.tiles and not self.tile_bag.discard_pile:
-            return True
+            # Ensure all factories and the center are empty (current round is completed)
+            if self.factories.is_empty() and not self.central_area.tiles:
+                return True  # Game ends if no more tiles are available and the round is completed
         
         return False
